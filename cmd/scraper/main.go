@@ -13,8 +13,11 @@ import (
 	"github.com/vbauerster/scraper-test/app"
 )
 
-var gendoc = flag.Bool("gendoc", false, "Generate router documentation")
-var src = flag.String("src", "sites.txt", "Services source file")
+var (
+	gendoc = flag.Bool("gendoc", false, "Generate router documentation")
+	src    = flag.String("src", "sites.txt", "Services source file")
+	port   = flag.String("port", "8080", "http port to listen on")
+)
 
 func main() {
 	flag.Parse()
@@ -25,7 +28,7 @@ func main() {
 	}
 	ctx := backgroundContext()
 	server := app.New(scraper.NewScraper(ctx, services), *gendoc)
-	server.Serve(ctx, ":8080", 5*time.Second)
+	server.Serve(ctx, ":"+*port, 5*time.Second)
 }
 
 func backgroundContext() context.Context {
