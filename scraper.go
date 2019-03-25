@@ -110,7 +110,7 @@ func (s *Scraper) serve(ctx context.Context) {
 	check := func(ctx context.Context, wg *sync.WaitGroup, sem chan struct{}, e *entry) {
 		defer wg.Done()
 		// This sem is guaranteeing that there are no more than N fetch operations running.
-		// It isn't guaranteeing thath there are no more than N goroutines running.
+		// It isn't guaranteeing that there are no more than N goroutines running.
 		sem <- struct{}{}
 		e.check(ctx)
 		s.bk.send(ctx, &e.res)
