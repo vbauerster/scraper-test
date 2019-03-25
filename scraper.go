@@ -8,15 +8,28 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
-var ErrNotFound = errors.New("not found")
+var (
+	ErrNotFound = errors.New("not found")
+	ErrNotReady = errors.New("not ready")
+)
 
-type Map map[string]*entry
+var (
+	rr       = time.Minute
+	maxFetch = runtime.GOMAXPROCS(0)
+)
+
+type BoundaryResponse struct {
+	participants int
+	name         string
+	respTime     time.Duration
+}
 
 type boundsType int
 
@@ -24,6 +37,8 @@ const (
 	boundsMin boundsType = iota
 	boundsMax
 )
+
+type srvMap map[string]*entry
 
 type result struct {
 	name     string
@@ -48,6 +63,8 @@ type entry struct {
 
 func (e *entry) check(ctx context.Context) {
 	fmt.Printf("check %q\n", e.res.name)
+	ctx, cancel := context.WithTimeout(ctx, rr)
+	defer cancel()
 	e.res.respTime, e.res.err = httpGet(ctx, e.res.name)
 	close(e.ready)
 }
@@ -87,7 +104,7 @@ func NewScraper(ctx context.Context, services []string) *scraper {
 
 func (s *scraper) serve(ctx context.Context) {
 
-	sem := make(chan struct{}, 8)
+	sem := make(chan struct{}, maxFetch)
 
 	check := func(ctx context.Context, wg *sync.WaitGroup, sem chan struct{}, e *entry) {
 		defer wg.Done()
@@ -99,11 +116,9 @@ func (s *scraper) serve(ctx context.Context) {
 		<-sem
 	}
 
-	cctx, cancel := context.WithCancel(ctx)
-	// ticker := time.NewTicker(time.Minute)
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(rr)
 
-	m := make(Map)
+	m := make(srvMap)
 	for _, name := range s.services {
 		if m[name] != nil {
 			continue
@@ -118,16 +133,15 @@ func (s *scraper) serve(ctx context.Context) {
 	wg := new(sync.WaitGroup)
 	for _, e := range m {
 		wg.Add(1)
-		go check(cctx, wg, sem, e)
+		go check(ctx, wg, sem, e)
 	}
-	go s.bk.terminate(ctx, wg)
 
 	for {
 		select {
 		case <-ticker.C:
-			cancel()
 			wg.Wait()
-			m = make(Map)
+			s.bk.send(ctx, nil)
+			m = make(srvMap)
 			for _, name := range s.services {
 				if m[name] != nil {
 					continue
@@ -138,34 +152,22 @@ func (s *scraper) serve(ctx context.Context) {
 				}
 			}
 			s.cache.Store(m)
-			// wg = new(sync.WaitGroup)
 			for _, e := range m {
 				wg.Add(1)
-				go check(cctx, wg, sem, e)
+				go check(ctx, wg, sem, e)
 			}
-			go s.bk.terminate(ctx, wg)
 
 		case <-ctx.Done():
-			cancel()
 			ticker.Stop()
 			close(s.done)
 			return
 		}
-		cctx, cancel = context.WithCancel(ctx)
 	}
 }
 
 func (s *boundsKeeper) send(ctx context.Context, res *result) {
 	select {
 	case s.stream <- res:
-	case <-ctx.Done():
-	}
-}
-
-func (s *boundsKeeper) terminate(ctx context.Context, wg *sync.WaitGroup) {
-	wg.Wait()
-	select {
-	case s.stream <- nil:
 	case <-ctx.Done():
 	}
 }
@@ -208,10 +210,14 @@ func (s *boundsKeeper) serve(ctx context.Context) {
 			case boundsMin:
 				if min != nil {
 					resp.res = *min
+				} else {
+					resp.res.err = ErrNotReady
 				}
 			case boundsMax:
 				if max != nil {
 					resp.res = *max
+				} else {
+					resp.res.err = ErrNotReady
 				}
 			}
 			req.response <- resp
@@ -226,7 +232,7 @@ func (s *boundsKeeper) serve(ctx context.Context) {
 // If err != nil, service is not accessible.
 func (s *scraper) GetResponseTime(name string) (time.Duration, error) {
 	<-s.ready
-	e := s.cache.Load().(Map)[name]
+	e := s.cache.Load().(srvMap)[name]
 	if e == nil {
 		return 0, ErrNotFound
 	}
@@ -234,12 +240,28 @@ func (s *scraper) GetResponseTime(name string) (time.Duration, error) {
 	return res.respTime, res.err
 }
 
-func (s *scraper) GetMin() (total int, res result) {
-	return s.getBoundary(boundsMin)
+func (s *scraper) GetMin() (*BoundaryResponse, error) {
+	total, res := s.getBoundary(boundsMin)
+	if res.err != nil {
+		return nil, res.err
+	}
+	return &BoundaryResponse{
+		participants: total,
+		name:         res.name,
+		respTime:     res.respTime,
+	}, nil
 }
 
-func (s *scraper) GetMax() (total int, res result) {
-	return s.getBoundary(boundsMax)
+func (s *scraper) GetMax() (*BoundaryResponse, error) {
+	total, res := s.getBoundary(boundsMax)
+	if res.err != nil {
+		return nil, res.err
+	}
+	return &BoundaryResponse{
+		participants: total,
+		name:         res.name,
+		respTime:     res.respTime,
+	}, nil
 }
 
 func (s *scraper) getBoundary(t boundsType) (total int, res result) {
