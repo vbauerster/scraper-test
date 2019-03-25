@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -26,9 +25,9 @@ var (
 )
 
 type BoundaryResponse struct {
-	participants int
-	name         string
-	respTime     time.Duration
+	Participants int
+	Name         string
+	RespTime     time.Duration
 }
 
 type boundsType int
@@ -37,6 +36,9 @@ const (
 	boundsMin boundsType = iota
 	boundsMax
 )
+
+// assuming srevice scheme is https
+const defaultServiceScheme = "https"
 
 type srvMap map[string]*entry
 
@@ -62,7 +64,6 @@ type entry struct {
 }
 
 func (e *entry) check(ctx context.Context) {
-	fmt.Printf("check %q\n", e.res.name)
 	ctx, cancel := context.WithTimeout(ctx, rr)
 	defer cancel()
 	e.res.respTime, e.res.err = httpGet(ctx, e.res.name)
@@ -74,7 +75,7 @@ func (e *entry) getResult() result {
 	return e.res
 }
 
-type scraper struct {
+type Scraper struct {
 	services []string
 	cache    atomic.Value
 	ready    chan struct{}
@@ -87,8 +88,8 @@ type boundsKeeper struct {
 	request chan *boundsRequest
 }
 
-func NewScraper(ctx context.Context, services []string) *scraper {
-	s := &scraper{
+func NewScraper(ctx context.Context, services []string) *Scraper {
+	s := &Scraper{
 		services: services,
 		ready:    make(chan struct{}),
 		done:     make(chan struct{}),
@@ -102,7 +103,7 @@ func NewScraper(ctx context.Context, services []string) *scraper {
 	return s
 }
 
-func (s *scraper) serve(ctx context.Context) {
+func (s *Scraper) serve(ctx context.Context) {
 
 	sem := make(chan struct{}, maxFetch)
 
@@ -228,9 +229,13 @@ func (s *boundsKeeper) serve(ctx context.Context) {
 	}
 }
 
+func (s *Scraper) GetServices() []string {
+	return s.services
+}
+
 // GetResponseTime returns response time of the service identified by name.
 // If err != nil, service is not accessible.
-func (s *scraper) GetResponseTime(name string) (time.Duration, error) {
+func (s *Scraper) GetResponseTime(name string) (time.Duration, error) {
 	<-s.ready
 	e := s.cache.Load().(srvMap)[name]
 	if e == nil {
@@ -240,31 +245,31 @@ func (s *scraper) GetResponseTime(name string) (time.Duration, error) {
 	return res.respTime, res.err
 }
 
-func (s *scraper) GetMin() (*BoundaryResponse, error) {
+func (s *Scraper) GetMin() (*BoundaryResponse, error) {
 	total, res := s.getBoundary(boundsMin)
 	if res.err != nil {
 		return nil, res.err
 	}
 	return &BoundaryResponse{
-		participants: total,
-		name:         res.name,
-		respTime:     res.respTime,
+		Participants: total,
+		Name:         res.name,
+		RespTime:     res.respTime,
 	}, nil
 }
 
-func (s *scraper) GetMax() (*BoundaryResponse, error) {
+func (s *Scraper) GetMax() (*BoundaryResponse, error) {
 	total, res := s.getBoundary(boundsMax)
 	if res.err != nil {
 		return nil, res.err
 	}
 	return &BoundaryResponse{
-		participants: total,
-		name:         res.name,
-		respTime:     res.respTime,
+		Participants: total,
+		Name:         res.name,
+		RespTime:     res.respTime,
 	}, nil
 }
 
-func (s *scraper) getBoundary(t boundsType) (total int, res result) {
+func (s *Scraper) getBoundary(t boundsType) (total int, res result) {
 	req := &boundsRequest{
 		boundsType: t,
 		response:   make(chan *boundsResponse, 1),
@@ -279,12 +284,13 @@ func (s *scraper) getBoundary(t boundsType) (total int, res result) {
 }
 
 func httpGet(ctx context.Context, name string) (time.Duration, error) {
-	url := "https://" + name
 	// in perfect world we should use http.MethodHead, but not all services implement it
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequest(http.MethodGet, "", nil)
 	if err != nil {
 		return 0, err
 	}
+	req.URL.Scheme = defaultServiceScheme
+	req.URL.Host = name
 	start := time.Now()
 	resp, err := http.DefaultClient.Do(req.WithContext(ctx))
 	if err != nil {
