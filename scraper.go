@@ -88,6 +88,7 @@ type boundsKeeper struct {
 	request chan *boundsRequest
 }
 
+// NewScraper initializes and starts a scraper service
 func NewScraper(ctx context.Context, services []string) *Scraper {
 	s := &Scraper{
 		services: services,
