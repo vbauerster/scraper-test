@@ -113,7 +113,7 @@ func (s *Scraper) serve(ctx context.Context) {
 
 	sem := make(chan struct{}, s.fetchLimit)
 
-	check := func(ctx context.Context, wg *sync.WaitGroup, sem chan struct{}, e *entry) {
+	check := func(wg *sync.WaitGroup, e *entry) {
 		defer wg.Done()
 		// This sem is guaranteeing that there are no more than N fetch operations running.
 		// It isn't guaranteeing that there are no more than N goroutines running.
@@ -140,7 +140,7 @@ func (s *Scraper) serve(ctx context.Context) {
 	wg := new(sync.WaitGroup)
 	for _, e := range m {
 		wg.Add(1)
-		go check(ctx, wg, sem, e)
+		go check(wg, e)
 	}
 
 	for {
@@ -161,7 +161,7 @@ func (s *Scraper) serve(ctx context.Context) {
 			s.cache.Store(m)
 			for _, e := range m {
 				wg.Add(1)
-				go check(ctx, wg, sem, e)
+				go check(wg, e)
 			}
 
 		case <-ctx.Done():
