@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/vbauerster/scraper-test"
+	scraper "github.com/vbauerster/scraper-test"
 	"github.com/vbauerster/scraper-test/app"
 )
 
@@ -27,7 +27,7 @@ func main() {
 		log.Fatal(err)
 	}
 	ctx := backgroundContext()
-	server := app.New(scraper.NewScraper(ctx, services), *gendoc)
+	server := app.New(scraper.NewScraper(ctx, services, 0, 0), *gendoc)
 	server.Serve(ctx, ":"+*port, 5*time.Second)
 }
 

@@ -9,7 +9,7 @@ import (
 
 	"github.com/go-chi/chi"
 	"github.com/go-chi/docgen"
-	"github.com/vbauerster/scraper-test"
+	scraper "github.com/vbauerster/scraper-test"
 )
 
 type server struct {

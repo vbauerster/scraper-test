@@ -6,7 +6,7 @@ import (
 
 	"github.com/go-chi/chi"
 	"github.com/go-chi/render"
-	"github.com/vbauerster/scraper-test"
+	scraper "github.com/vbauerster/scraper-test"
 )
 
 type Service struct {

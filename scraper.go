@@ -19,11 +19,6 @@ var (
 	ErrNotReady = errors.New("not ready")
 )
 
-var (
-	rr       = time.Minute
-	maxFetch = runtime.GOMAXPROCS(0)
-)
-
 type BoundaryResponse struct {
 	Participants int
 	Name         string
@@ -63,8 +58,8 @@ type entry struct {
 	ready chan struct{} // closed when res is ready
 }
 
-func (e *entry) check(ctx context.Context) {
-	ctx, cancel := context.WithTimeout(ctx, rr)
+func (e *entry) check(ctx context.Context, timeout time.Duration) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	e.res.respTime, e.res.err = httpGet(ctx, e.res.name)
 	close(e.ready)
@@ -76,11 +71,13 @@ func (e *entry) getResult() result {
 }
 
 type Scraper struct {
-	services []string
-	cache    atomic.Value
-	ready    chan struct{}
-	done     chan struct{}
-	bk       *boundsKeeper
+	fetchLimit int
+	rr         time.Duration
+	services   []string
+	cache      atomic.Value
+	ready      chan struct{}
+	done       chan struct{}
+	bk         *boundsKeeper
 }
 
 type boundsKeeper struct {
@@ -89,15 +86,23 @@ type boundsKeeper struct {
 }
 
 // NewScraper initializes and starts a scraper service
-func NewScraper(ctx context.Context, services []string) *Scraper {
+func NewScraper(ctx context.Context, services []string, refreshRate time.Duration, fetchLimit int) *Scraper {
 	s := &Scraper{
-		services: services,
-		ready:    make(chan struct{}),
-		done:     make(chan struct{}),
+		fetchLimit: fetchLimit,
+		rr:         refreshRate,
+		services:   services,
+		ready:      make(chan struct{}),
+		done:       make(chan struct{}),
 		bk: &boundsKeeper{
 			stream:  make(chan *result),
 			request: make(chan *boundsRequest),
 		},
+	}
+	if s.fetchLimit < 1 {
+		s.fetchLimit = runtime.NumCPU()
+	}
+	if s.rr < time.Minute {
+		s.rr = time.Minute
 	}
 	go s.serve(ctx)
 	go s.bk.serve(ctx)
@@ -106,19 +111,19 @@ func NewScraper(ctx context.Context, services []string) *Scraper {
 
 func (s *Scraper) serve(ctx context.Context) {
 
-	sem := make(chan struct{}, maxFetch)
+	sem := make(chan struct{}, s.fetchLimit)
 
 	check := func(ctx context.Context, wg *sync.WaitGroup, sem chan struct{}, e *entry) {
 		defer wg.Done()
 		// This sem is guaranteeing that there are no more than N fetch operations running.
 		// It isn't guaranteeing that there are no more than N goroutines running.
 		sem <- struct{}{}
-		e.check(ctx)
+		e.check(ctx, s.rr)
 		s.bk.send(ctx, &e.res)
 		<-sem
 	}
 
-	ticker := time.NewTicker(rr)
+	ticker := time.NewTicker(s.rr)
 
 	m := make(srvMap)
 	for _, name := range s.services {
