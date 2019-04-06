@@ -20,9 +20,10 @@ var (
 )
 
 type BoundaryResponse struct {
-	Participants int
-	Name         string
-	RespTime     time.Duration
+	TotalOk  int
+	TotalErr int
+	Name     string
+	RespTime time.Duration
 }
 
 type boundsType int
@@ -38,9 +39,10 @@ const defaultServiceScheme = "https"
 type srvMap map[string]*entry
 
 type result struct {
-	name     string
-	respTime time.Duration
-	err      error
+	checkCount uint
+	name       string
+	respTime   time.Duration
+	err        error
 }
 
 type boundsRequest struct {
@@ -49,13 +51,15 @@ type boundsRequest struct {
 }
 
 type boundsResponse struct {
-	total int
-	res   result
+	totalOk  int
+	totalErr int
+	res      result
 }
 
 type entry struct {
-	res   result
-	ready chan struct{} // closed when res is ready
+	chkCount uint
+	res      result
+	ready    chan struct{} // closed when res is ready
 }
 
 func (e *entry) check(ctx context.Context, timeout time.Duration) {
@@ -81,8 +85,9 @@ type Scraper struct {
 }
 
 type boundsKeeper struct {
-	stream  chan *result
+	stream  chan *entry
 	request chan *boundsRequest
+	errors  chan []result
 }
 
 // NewScraper initializes and starts a scraper service
@@ -94,8 +99,9 @@ func NewScraper(ctx context.Context, services []string, refreshRate time.Duratio
 		ready:      make(chan struct{}),
 		done:       make(chan struct{}),
 		bk: &boundsKeeper{
-			stream:  make(chan *result),
+			stream:  make(chan *entry),
 			request: make(chan *boundsRequest),
+			errors:  make(chan []result),
 		},
 	}
 	if s.fetchLimit < 1 {
@@ -118,11 +124,12 @@ func (s *Scraper) serve(ctx context.Context) {
 		// This sem is guaranteeing that there are no more than N fetch operations running.
 		// It isn't guaranteeing that there are no more than N goroutines running.
 		sem <- struct{}{}
-		e.check(ctx, s.rr)
-		s.bk.send(ctx, &e.res)
+		e.check(ctx, s.rr/2)
 		<-sem
+		s.bk.send(ctx, e)
 	}
 
+	var chkCount uint
 	ticker := time.NewTicker(s.rr)
 
 	m := make(srvMap)
@@ -131,8 +138,9 @@ func (s *Scraper) serve(ctx context.Context) {
 			continue
 		}
 		m[name] = &entry{
-			res:   result{name: name},
-			ready: make(chan struct{}),
+			chkCount: chkCount,
+			res:      result{name: name},
+			ready:    make(chan struct{}),
 		}
 	}
 	s.cache.Store(m)
@@ -144,20 +152,23 @@ func (s *Scraper) serve(ctx context.Context) {
 	}
 
 	for {
+		chkCount++
 		select {
 		case <-ticker.C:
 			wg.Wait()
-			s.bk.send(ctx, nil)
 			m = make(srvMap)
 			for _, name := range s.services {
 				if m[name] != nil {
 					continue
 				}
 				m[name] = &entry{
-					res:   result{name: name},
-					ready: make(chan struct{}),
+					chkCount: chkCount,
+					res:      result{name: name},
+					ready:    make(chan struct{}),
 				}
 			}
+			// no need to protect by mutex, as this is the only goroutine updating
+			// s.cache Value
 			s.cache.Store(m)
 			for _, e := range m {
 				wg.Add(1)
@@ -172,62 +183,58 @@ func (s *Scraper) serve(ctx context.Context) {
 	}
 }
 
-func (s *boundsKeeper) send(ctx context.Context, res *result) {
+func (s *boundsKeeper) send(ctx context.Context, e *entry) {
 	select {
-	case s.stream <- res:
+	case s.stream <- e:
 	case <-ctx.Done():
 	}
 }
 
 func (s *boundsKeeper) serve(ctx context.Context) {
-	var reset bool
+	var chkCount uint
 	var total int
-	var min *result
-	var max *result
+	min := result{err: ErrNotReady}
+	max := result{err: ErrNotReady}
+	errors := []result{}
 	for {
 		select {
-		case res := <-s.stream:
-			if res == nil {
-				reset = !reset
-				break
-			}
-			if res.err != nil {
-				break
-			}
-			if reset {
-				reset = !reset
+		case entry := <-s.stream:
+			if entry.chkCount != chkCount {
 				total = 0
+				errors = errors[0:0]
+			}
+			if entry.res.err != nil {
+				errors = append(errors, entry.res)
+				break
 			}
 			if total > 0 {
-				if res.respTime < min.respTime {
-					min = res
+				if entry.res.respTime < min.respTime {
+					min = entry.res
 				}
-				if res.respTime > max.respTime {
-					max = res
+				if entry.res.respTime > max.respTime {
+					max = entry.res
 				}
 			} else {
-				min = res
-				max = res
+				min = entry.res
+				max = entry.res
 			}
 			total++
+			chkCount = entry.chkCount
 
 		case req := <-s.request:
-			resp := &boundsResponse{total: total}
+			resp := &boundsResponse{
+				totalOk:  total,
+				totalErr: len(errors),
+			}
 			switch req.boundsType {
 			case boundsMin:
-				if min != nil {
-					resp.res = *min
-				} else {
-					resp.res.err = ErrNotReady
-				}
+				resp.res = min
 			case boundsMax:
-				if max != nil {
-					resp.res = *max
-				} else {
-					resp.res.err = ErrNotReady
-				}
+				resp.res = max
 			}
 			req.response <- resp
+
+		case s.errors <- errors[0:len(errors):len(errors)]:
 
 		case <-ctx.Done():
 			return
@@ -252,30 +259,32 @@ func (s *Scraper) GetResponseTime(name string) (time.Duration, error) {
 }
 
 func (s *Scraper) GetMin() (*BoundaryResponse, error) {
-	total, res := s.getBoundary(boundsMin)
-	if res.err != nil {
-		return nil, res.err
+	res := s.getBoundary(boundsMin)
+	if res.res.err != nil {
+		return nil, res.res.err
 	}
 	return &BoundaryResponse{
-		Participants: total,
-		Name:         res.name,
-		RespTime:     res.respTime,
+		TotalOk:  res.totalOk,
+		TotalErr: res.totalErr,
+		Name:     res.res.name,
+		RespTime: res.res.respTime,
 	}, nil
 }
 
 func (s *Scraper) GetMax() (*BoundaryResponse, error) {
-	total, res := s.getBoundary(boundsMax)
-	if res.err != nil {
-		return nil, res.err
+	res := s.getBoundary(boundsMax)
+	if res.res.err != nil {
+		return nil, res.res.err
 	}
 	return &BoundaryResponse{
-		Participants: total,
-		Name:         res.name,
-		RespTime:     res.respTime,
+		TotalOk:  res.totalOk,
+		TotalErr: res.totalErr,
+		Name:     res.res.name,
+		RespTime: res.res.respTime,
 	}, nil
 }
 
-func (s *Scraper) getBoundary(t boundsType) (total int, res result) {
+func (s *Scraper) getBoundary(t boundsType) *boundsResponse {
 	req := &boundsRequest{
 		boundsType: t,
 		response:   make(chan *boundsResponse, 1),
@@ -285,8 +294,7 @@ func (s *Scraper) getBoundary(t boundsType) (total int, res result) {
 	case <-s.done:
 		req.response <- new(boundsResponse)
 	}
-	resp := <-req.response
-	return resp.total, resp.res
+	return <-req.response
 }
 
 func httpGet(ctx context.Context, name string) (time.Duration, error) {
