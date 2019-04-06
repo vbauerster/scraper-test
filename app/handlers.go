@@ -58,26 +58,16 @@ func servicesResponse(services []*scraper.ServiceResponse) []render.Renderer {
 	return errServices
 }
 
-// func (s *server) listServices(w http.ResponseWriter, r *http.Request) {
-// 	services := s.scraper.GetServices()
-// 	if err := render.RenderList(w, r, servicesResponse(services)); err != nil {
-// 		render.Render(w, r, ErrRender(err))
-// 		return
-// 	}
-// }
-
 func (s *server) listErrorServices(w http.ResponseWriter, r *http.Request) {
 	services := s.scraper.GetErrorServices()
 	if err := render.RenderList(w, r, servicesResponse(services)); err != nil {
 		render.Render(w, r, ErrRender(err))
-		return
 	}
 }
 
 func (s *server) queryService(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "serviceName")
 	resp, err := s.scraper.GetServiceResponse(name)
-	// spew.Dump(resp)
 	if err != nil {
 		if err == scraper.ErrNotFound {
 			render.Render(w, r, ErrNotFound)
@@ -94,7 +84,6 @@ func (s *server) queryService(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := render.Render(w, r, payload); err != nil {
 		render.Render(w, r, ErrRender(err))
-		return
 	}
 }
 
@@ -117,7 +106,6 @@ func (s *server) boundsMin(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := render.Render(w, r, payload); err != nil {
 		render.Render(w, r, ErrRender(err))
-		return
 	}
 }
 
@@ -140,6 +128,5 @@ func (s *server) boundsMax(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := render.Render(w, r, payload); err != nil {
 		render.Render(w, r, ErrRender(err))
-		return
 	}
 }
