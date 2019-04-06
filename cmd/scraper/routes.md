@@ -18,6 +18,20 @@ scraper-test REST API.
 
 </details>
 <details>
+<summary>`/bounds/*/errors`</summary>
+
+- [RequestID](https://github.com/go-chi/chi/middleware/request_id.go#L63)
+- [RealIP](https://github.com/go-chi/chi/middleware/realip.go#L29)
+- [Logger](https://github.com/go-chi/chi/middleware/logger.go#L30)
+- [Recoverer](https://github.com/go-chi/chi/middleware/recoverer.go#L18)
+- [SetContentType.func1](https://github.com/go-chi/render/content_type.go#L49)
+- **/bounds/***
+	- **/errors**
+		- _GET_
+			- [(*server).listErrorServices-fm](/app/handlers.go#L61)
+
+</details>
+<details>
 <summary>`/bounds/*/max`</summary>
 
 - [RequestID](https://github.com/go-chi/chi/middleware/request_id.go#L63)
@@ -28,7 +42,7 @@ scraper-test REST API.
 - **/bounds/***
 	- **/max**
 		- _GET_
-			- [(*server).boundsMax-fm](/app/handlers.go#L91)
+			- [(*server).boundsMax-fm](/app/handlers.go#L112)
 
 </details>
 <details>
@@ -42,21 +56,7 @@ scraper-test REST API.
 - **/bounds/***
 	- **/min**
 		- _GET_
-			- [(*server).boundsMin-fm](/app/handlers.go#L73)
-
-</details>
-<details>
-<summary>`/services/*`</summary>
-
-- [RequestID](https://github.com/go-chi/chi/middleware/request_id.go#L63)
-- [RealIP](https://github.com/go-chi/chi/middleware/realip.go#L29)
-- [Logger](https://github.com/go-chi/chi/middleware/logger.go#L30)
-- [Recoverer](https://github.com/go-chi/chi/middleware/recoverer.go#L18)
-- [SetContentType.func1](https://github.com/go-chi/render/content_type.go#L49)
-- **/services/***
-	- **/**
-		- _GET_
-			- [(*server).listServices-fm](/app/handlers.go#L47)
+			- [(*server).boundsMin-fm](/app/handlers.go#L90)
 
 </details>
 <details>
@@ -70,7 +70,7 @@ scraper-test REST API.
 - **/services/***
 	- **/{serviceName}**
 		- _GET_
-			- [(*server).queryService-fm](/app/handlers.go#L55)
+			- [(*server).queryService-fm](/app/handlers.go#L68)
 
 </details>
 
