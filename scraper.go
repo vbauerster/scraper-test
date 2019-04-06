@@ -14,13 +14,17 @@ import (
 	"time"
 )
 
-const timeout = 15 * time.Second
-
 type boundsType int
 
 const (
 	boundsMin boundsType = iota
 	boundsMax
+)
+
+const (
+	// assuming srevice scheme is https
+	defaultServiceScheme = "https"
+	timeout              = 15 * time.Second
 )
 
 var (
@@ -40,9 +44,6 @@ type ServiceResponse struct {
 	RespTime time.Duration
 	Error    error
 }
-
-// assuming srevice scheme is https
-const defaultServiceScheme = "https"
 
 type srvMap map[string]*entry
 
