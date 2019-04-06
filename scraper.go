@@ -14,6 +14,15 @@ import (
 	"time"
 )
 
+const timeout = 15 * time.Second
+
+type boundsType int
+
+const (
+	boundsMin boundsType = iota
+	boundsMax
+)
+
 var (
 	ErrNotFound = errors.New("not found")
 	ErrNotReady = errors.New("not ready")
@@ -26,12 +35,11 @@ type BoundaryResponse struct {
 	RespTime time.Duration
 }
 
-type boundsType int
-
-const (
-	boundsMin boundsType = iota
-	boundsMax
-)
+type ServiceResponse struct {
+	Name     string
+	RespTime time.Duration
+	Error    error
+}
 
 // assuming srevice scheme is https
 const defaultServiceScheme = "https"
@@ -124,7 +132,7 @@ func (s *Scraper) serve(ctx context.Context) {
 		// This sem is guaranteeing that there are no more than N fetch operations running.
 		// It isn't guaranteeing that there are no more than N goroutines running.
 		sem <- struct{}{}
-		e.check(ctx, s.rr/2)
+		e.check(ctx, timeout)
 		<-sem
 		s.bk.send(ctx, e)
 	}
@@ -242,20 +250,35 @@ func (s *boundsKeeper) serve(ctx context.Context) {
 	}
 }
 
-func (s *Scraper) GetServices() []string {
-	return s.services
+func (s *Scraper) GetErrorServices() (services []*ServiceResponse) {
+
+	select {
+	case errors := <-s.bk.errors:
+		for _, res := range errors {
+			services = append(services, &ServiceResponse{
+				Name:  res.name,
+				Error: res.err,
+			})
+		}
+	case <-s.done:
+	}
+
+	return services
 }
 
-// GetResponseTime returns response time of the service identified by name.
-// If err != nil, service is not accessible.
-func (s *Scraper) GetResponseTime(name string) (time.Duration, error) {
+// GetServiceResponse returns response time of the service identified by name.
+func (s *Scraper) GetServiceResponse(name string) (*ServiceResponse, error) {
 	<-s.ready
-	e := s.cache.Load().(srvMap)[name]
-	if e == nil {
-		return 0, ErrNotFound
+	entry := s.cache.Load().(srvMap)[name]
+	if entry == nil {
+		return nil, ErrNotFound
 	}
-	res := e.getResult()
-	return res.respTime, res.err
+	res := entry.getResult()
+	return &ServiceResponse{
+		Name:     res.name,
+		RespTime: res.respTime,
+		Error:    res.err,
+	}, nil
 }
 
 func (s *Scraper) GetMin() (*BoundaryResponse, error) {

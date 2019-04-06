@@ -9,43 +9,65 @@ import (
 	scraper "github.com/vbauerster/scraper-test"
 )
 
+// Base model
 type Service struct {
-	Name string `json:"name"`
+	Name         string        `json:"name"`
+	Milliseconds int64         `json:"response_time_ms"`
+	Alive        bool          `json:"is_alive"`
+	RespTime     time.Duration `json:"-"`
+	Err          error         `json:"-"`
 }
 
 func (rd *Service) Render(w http.ResponseWriter, r *http.Request) error {
-	return nil
-}
-
-type ServiceQueryResponse struct {
-	*Service
-	Milliseconds int64  `json:"response_time_ms"`
-	Alive        bool   `json:"is_alive"`
-	ErrorText    string `json:"error_text,omitempty"`
-	Participants int    `json:"participants,omitempty"`
-	respTime     time.Duration
-	err          error
-}
-
-func (rd *ServiceQueryResponse) Render(w http.ResponseWriter, r *http.Request) error {
-	if rd.err != nil {
-		rd.ErrorText = rd.err.Error()
-	} else {
-		rd.Milliseconds = int64(rd.respTime / time.Millisecond)
+	if rd.Err == nil {
+		rd.Milliseconds = int64(rd.RespTime / time.Millisecond)
 		rd.Alive = true
 	}
 	return nil
 }
 
-func servicesResponse(services []string) (payload []render.Renderer) {
-	for i := range services {
-		payload = append(payload, &Service{Name: services[i]})
-	}
-	return payload
+type ServiceBoundsResponse struct {
+	*Service
+	TotalOk  int `json:"total_ok"`
+	TotalErr int `json:"total_err"`
 }
 
-func (s *server) listServices(w http.ResponseWriter, r *http.Request) {
-	services := s.scraper.GetServices()
+type ServiceQueryResponse struct {
+	*Service
+	ErrorText string `json:"error_text,omitempty"`
+}
+
+func (rd *ServiceQueryResponse) Render(w http.ResponseWriter, r *http.Request) error {
+	if rd.Err != nil {
+		rd.ErrorText = rd.Err.Error()
+	}
+	return nil
+}
+
+func servicesResponse(services []*scraper.ServiceResponse) []render.Renderer {
+	errServices := make([]render.Renderer, 0, len(services))
+	for _, s := range services {
+		errServices = append(errServices, &ServiceQueryResponse{
+			Service: &Service{
+				Name:     s.Name,
+				RespTime: s.RespTime,
+				Err:      s.Error,
+			},
+		})
+	}
+	return errServices
+}
+
+// func (s *server) listServices(w http.ResponseWriter, r *http.Request) {
+// 	services := s.scraper.GetServices()
+// 	if err := render.RenderList(w, r, servicesResponse(services)); err != nil {
+// 		render.Render(w, r, ErrRender(err))
+// 		return
+// 	}
+// }
+
+func (s *server) listErrorServices(w http.ResponseWriter, r *http.Request) {
+	services := s.scraper.GetErrorServices()
 	if err := render.RenderList(w, r, servicesResponse(services)); err != nil {
 		render.Render(w, r, ErrRender(err))
 		return
@@ -54,15 +76,21 @@ func (s *server) listServices(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) queryService(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "serviceName")
-	respTime, err := s.scraper.GetResponseTime(name)
-	if err == scraper.ErrNotFound {
-		render.Render(w, r, ErrNotFound)
+	resp, err := s.scraper.GetServiceResponse(name)
+	// spew.Dump(resp)
+	if err != nil {
+		if err == scraper.ErrNotFound {
+			render.Render(w, r, ErrNotFound)
+		}
+		render.Render(w, r, ErrRender(err))
 		return
 	}
 	payload := &ServiceQueryResponse{
-		Service:  &Service{Name: name},
-		respTime: respTime,
-		err:      err,
+		Service: &Service{
+			Name:     resp.Name,
+			RespTime: resp.RespTime,
+			Err:      resp.Error,
+		},
 	}
 	if err := render.Render(w, r, payload); err != nil {
 		render.Render(w, r, ErrRender(err))
@@ -72,15 +100,20 @@ func (s *server) queryService(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) boundsMin(w http.ResponseWriter, r *http.Request) {
 	resp, err := s.scraper.GetMin()
-	if err == scraper.ErrNotReady {
+	if err != nil {
+		if err == scraper.ErrNotReady {
+			render.Render(w, r, ErrRender(err))
+		}
 		render.Render(w, r, ErrRender(err))
 		return
 	}
-	payload := &ServiceQueryResponse{
-		Service:      &Service{Name: resp.Name},
-		Participants: resp.Participants,
-		respTime:     resp.RespTime,
-		err:          err,
+	payload := &ServiceBoundsResponse{
+		Service: &Service{
+			Name:     resp.Name,
+			RespTime: resp.RespTime,
+		},
+		TotalOk:  resp.TotalOk,
+		TotalErr: resp.TotalErr,
 	}
 	if err := render.Render(w, r, payload); err != nil {
 		render.Render(w, r, ErrRender(err))
@@ -90,15 +123,20 @@ func (s *server) boundsMin(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) boundsMax(w http.ResponseWriter, r *http.Request) {
 	resp, err := s.scraper.GetMax()
-	if err == scraper.ErrNotReady {
+	if err != nil {
+		if err == scraper.ErrNotReady {
+			render.Render(w, r, ErrRender(err))
+		}
 		render.Render(w, r, ErrRender(err))
 		return
 	}
-	payload := &ServiceQueryResponse{
-		Service:      &Service{Name: resp.Name},
-		Participants: resp.Participants,
-		respTime:     resp.RespTime,
-		err:          err,
+	payload := &ServiceBoundsResponse{
+		Service: &Service{
+			Name:     resp.Name,
+			RespTime: resp.RespTime,
+		},
+		TotalOk:  resp.TotalOk,
+		TotalErr: resp.TotalErr,
 	}
 	if err := render.Render(w, r, payload); err != nil {
 		render.Render(w, r, ErrRender(err))

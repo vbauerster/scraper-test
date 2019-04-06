@@ -20,12 +20,12 @@ func (s *server) initRoutes() {
 	})
 
 	s.router.Route("/services", func(r chi.Router) {
-		r.Get("/", s.listServices)
 		r.Get("/{serviceName}", s.queryService)
 	})
 
 	s.router.Route("/bounds", func(r chi.Router) {
 		r.Get("/min", s.boundsMin)
 		r.Get("/max", s.boundsMax)
+		r.Get("/errors", s.listErrorServices)
 	})
 }
