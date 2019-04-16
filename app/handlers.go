@@ -12,57 +12,39 @@ import (
 // Base model
 type Service struct {
 	Name         string        `json:"name"`
-	Milliseconds int64         `json:"response_time_ms"`
-	Alive        bool          `json:"is_alive"`
-	RespTime     time.Duration `json:"-"`
-	Err          error         `json:"-"`
+	AvgRespTime  time.Duration `json:"-"`
+	LastRespTime time.Duration `json:"-"`
+	LastError    error         `json:"-"`
+	ErrRate      float32       `json:"err_rate"`
 }
 
 func (rd *Service) Render(w http.ResponseWriter, r *http.Request) error {
-	if rd.Err == nil {
-		rd.Milliseconds = int64(rd.RespTime / time.Millisecond)
-		rd.Alive = true
-	}
 	return nil
 }
 
 type ServiceBoundsResponse struct {
-	*Service
-	TotalOk  int `json:"total_ok"`
-	TotalErr int `json:"total_err"`
+	Min *ServiceQueryResponse `json:"min"`
+	Max *ServiceQueryResponse `json:"max"`
+}
+
+func (rd *ServiceBoundsResponse) Render(w http.ResponseWriter, r *http.Request) error {
+	return nil
 }
 
 type ServiceQueryResponse struct {
 	*Service
-	ErrorText string `json:"error_text,omitempty"`
+	AvgRespTime  int64  `json:"avg_resp_ms"`
+	LastRespTime int64  `json:"last_resp_ms"`
+	LastError    string `json:"last_error,omitempty"`
 }
 
 func (rd *ServiceQueryResponse) Render(w http.ResponseWriter, r *http.Request) error {
-	if rd.Err != nil {
-		rd.ErrorText = rd.Err.Error()
+	rd.AvgRespTime = int64(rd.Service.AvgRespTime / time.Millisecond)
+	rd.LastRespTime = int64(rd.Service.LastRespTime / time.Millisecond)
+	if err := rd.Service.LastError; err != nil {
+		rd.LastError = err.Error()
 	}
 	return nil
-}
-
-func servicesResponse(services []*scraper.ServiceResponse) []render.Renderer {
-	errServices := make([]render.Renderer, 0, len(services))
-	for _, s := range services {
-		errServices = append(errServices, &ServiceQueryResponse{
-			Service: &Service{
-				Name:     s.Name,
-				RespTime: s.RespTime,
-				Err:      s.Error,
-			},
-		})
-	}
-	return errServices
-}
-
-func (s *server) listErrorServices(w http.ResponseWriter, r *http.Request) {
-	services := s.scraper.GetErrorServices()
-	if err := render.RenderList(w, r, servicesResponse(services)); err != nil {
-		render.Render(w, r, ErrRender(err))
-	}
 }
 
 func (s *server) queryService(w http.ResponseWriter, r *http.Request) {
@@ -77,9 +59,11 @@ func (s *server) queryService(w http.ResponseWriter, r *http.Request) {
 	}
 	payload := &ServiceQueryResponse{
 		Service: &Service{
-			Name:     resp.Name,
-			RespTime: resp.RespTime,
-			Err:      resp.Error,
+			Name:         resp.Name,
+			AvgRespTime:  resp.AvgRespTime,
+			LastRespTime: resp.LastRespTime,
+			LastError:    resp.LastError,
+			ErrRate:      resp.ErrRate,
 		},
 	}
 	if err := render.Render(w, r, payload); err != nil {
@@ -87,8 +71,8 @@ func (s *server) queryService(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *server) boundsMin(w http.ResponseWriter, r *http.Request) {
-	resp, err := s.scraper.GetMin()
+func (s *server) queryBounds(w http.ResponseWriter, r *http.Request) {
+	resp, err := s.scraper.GetBounds()
 	if err != nil {
 		if err == scraper.ErrNotReady {
 			render.Render(w, r, ErrRender(err))
@@ -97,34 +81,24 @@ func (s *server) boundsMin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	payload := &ServiceBoundsResponse{
-		Service: &Service{
-			Name:     resp.Name,
-			RespTime: resp.RespTime,
+		Min: &ServiceQueryResponse{
+			Service: &Service{
+				Name:         resp.Min.Name,
+				AvgRespTime:  resp.Min.AvgRespTime,
+				LastRespTime: resp.Min.LastRespTime,
+				LastError:    resp.Min.LastError,
+				ErrRate:      resp.Min.ErrRate,
+			},
 		},
-		TotalOk:  resp.TotalOk,
-		TotalErr: resp.TotalErr,
-	}
-	if err := render.Render(w, r, payload); err != nil {
-		render.Render(w, r, ErrRender(err))
-	}
-}
-
-func (s *server) boundsMax(w http.ResponseWriter, r *http.Request) {
-	resp, err := s.scraper.GetMax()
-	if err != nil {
-		if err == scraper.ErrNotReady {
-			render.Render(w, r, ErrRender(err))
-		}
-		render.Render(w, r, ErrRender(err))
-		return
-	}
-	payload := &ServiceBoundsResponse{
-		Service: &Service{
-			Name:     resp.Name,
-			RespTime: resp.RespTime,
+		Max: &ServiceQueryResponse{
+			Service: &Service{
+				Name:         resp.Max.Name,
+				AvgRespTime:  resp.Max.AvgRespTime,
+				LastRespTime: resp.Max.LastRespTime,
+				LastError:    resp.Max.LastError,
+				ErrRate:      resp.Max.ErrRate,
+			},
 		},
-		TotalOk:  resp.TotalOk,
-		TotalErr: resp.TotalErr,
 	}
 	if err := render.Render(w, r, payload); err != nil {
 		render.Render(w, r, ErrRender(err))

@@ -15,17 +15,13 @@ func (s *server) initRoutes() {
 	s.router.Use(middleware.Recoverer)
 	s.router.Use(render.SetContentType(render.ContentTypeJSON))
 
-	s.router.Get("/admins", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("good admins save all logs"))
-	})
+	s.router.Get("/bounds", s.queryBounds)
 
 	s.router.Route("/services", func(r chi.Router) {
 		r.Get("/{serviceName}", s.queryService)
 	})
 
-	s.router.Route("/bounds", func(r chi.Router) {
-		r.Get("/min", s.boundsMin)
-		r.Get("/max", s.boundsMax)
-		r.Get("/errors", s.listErrorServices)
+	s.router.Get("/admins", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("all good admins save logs"))
 	})
 }
