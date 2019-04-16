@@ -5,7 +5,6 @@ import (
 	"container/heap"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -19,7 +18,7 @@ import (
 const (
 	// assuming srevice scheme is https
 	defaultServiceScheme = "https"
-	timeout              = 15 * time.Second
+	timeout              = 10 * time.Second
 )
 
 var (
@@ -45,36 +44,46 @@ type srvMap map[string]*entry
 
 type result struct {
 	name        string
+	ready       chan struct{}
 	respTime    time.Duration
 	avgRespTime time.Duration
 	errRate     float32
 	err         error
-	ready       chan struct{}
 }
 
-type window [10]*result
+type window [15]*result
+
+func (w window) last(count uint) (r *result) {
+	for i := 0; i < len(w); i++ {
+		r = w[(count-uint(i))%uint(len(w))]
+		// fmt.Fprintf(os.Stderr, "for#%d: w[%d]=%v\n", count, (count-uint(i))%uint(len(w)), r)
+		if r != nil {
+			return r
+		}
+	}
+	return r
+}
 
 type entry struct {
 	name   string
 	window atomic.Value
-	// ress   window
 
-	bcMin *BoundsCounter
-	bcMax *BoundsCounter
+	bcMin *boundsCounter
+	bcMax *boundsCounter
 }
 
-type BoundsCounter struct {
+type boundsCounter struct {
 	name  string
 	index int
-	count int
+	count uint
 }
 
-func (e *entry) minUpd(h *BoundsHeap) {
+func (e *entry) minUpd(h *boundsHeap) {
 	e.bcMin.count++
 	heap.Fix(h, e.bcMin.index)
 }
 
-func (e *entry) maxUpd(h *BoundsHeap) {
+func (e *entry) maxUpd(h *boundsHeap) {
 	e.bcMax.count++
 	heap.Fix(h, e.bcMax.index)
 }
@@ -88,11 +97,11 @@ func (e *entry) check(ctx context.Context, ch chan<- *result, count uint) {
 	w := e.window.Load().(window)
 	w[count%uint(len(w))] = res
 	var sum, errs, total int64
-	for i, r := range w {
+	for _, r := range w {
 		if r == nil {
-			if e.name == "qq.com" {
-				fmt.Fprintf(os.Stderr, "check#%d: w[%d]=%v\n", count, i, r)
-			}
+			// if e.name == "qq.com" {
+			// 	fmt.Fprintf(os.Stderr, "check#%d: w[%d]=%v\n", count, i, r)
+			// }
 			break
 		}
 		if r.err != nil {
@@ -153,8 +162,8 @@ func NewScraper(ctx context.Context, services []string, refreshRate time.Duratio
 		services:     services,
 		agregateDone: make(chan *boundsResult),
 		serviceReq:   make(chan *serivceRequest),
-		// boundsReq:    make(chan *boundsRequest),
-		done: make(chan struct{}),
+		boundsReq:    make(chan chan *boundsResponse),
+		done:         make(chan struct{}),
 	}
 	if s.fetchLimit < 1 {
 		s.fetchLimit = runtime.NumCPU()
@@ -168,71 +177,74 @@ func NewScraper(ctx context.Context, services []string, refreshRate time.Duratio
 
 func (s *Scraper) serve(ctx context.Context) {
 
+	m := make(srvMap)
 	sem := make(chan struct{}, s.fetchLimit)
 
-	check := func(wg *sync.WaitGroup, e *entry, ch chan<- *result, count uint) {
-		defer wg.Done()
-		// This sem is guaranteeing that there are no more than N fetch operations running.
-		// It isn't guaranteeing that there are no more than N goroutines running.
-		sem <- struct{}{}
-		e.check(ctx, ch, count)
-		<-sem
+	check := func(count uint) {
+		var wg sync.WaitGroup
+		wg.Add(len(m))
+		aggCh := make(chan *result)
+		for _, e := range m {
+			w := e.window.Load().(window)
+			// override old result, if any
+			w[count%uint(len(w))] = nil
+			e.window.Store(w)
+			go func(e *entry) {
+				defer wg.Done()
+				// This sem is guaranteeing that there are no more than N fetch operations running.
+				// It isn't guaranteeing that there are no more than N goroutines running.
+				sem <- struct{}{}
+				e.check(ctx, aggCh, count)
+				<-sem
+			}(e)
+		}
+		go func() {
+			wg.Wait()
+			close(aggCh)
+		}()
+		go s.boundsAgregate(aggCh)
 	}
 
-	ticker := time.NewTicker(s.rr)
-	m := make(srvMap)
-	minHeap := BoundsHeap{}
-	maxHeap := BoundsHeap{}
+	minHeap := boundsHeap{}
+	maxHeap := boundsHeap{}
 
-	for _, name := range s.services {
+	for i, name := range s.services {
 		if m[name] != nil {
 			continue
 		}
-		bcMin := &BoundsCounter{name: name}
-		bcMax := &BoundsCounter{name: name}
 		e := &entry{
 			name:  name,
-			bcMin: bcMin,
-			bcMax: bcMax,
+			bcMin: &boundsCounter{name, i, 0},
+			bcMax: &boundsCounter{name, i, 0},
 		}
 		e.window.Store(window{})
+		minHeap = append(minHeap, e.bcMin)
+		maxHeap = append(maxHeap, e.bcMax)
 		m[name] = e
-		minHeap = append(minHeap, bcMin)
-		maxHeap = append(maxHeap, bcMax)
 	}
 	heap.Init(&minHeap)
 	heap.Init(&maxHeap)
 
-	var bounds *boundsResult
 	var count uint
+	check(count)
+
+	var bounds *boundsResult
+	ticker := time.NewTicker(s.rr)
 	for {
 		select {
 		case <-ticker.C:
-			in := make(chan *result)
-			var wg sync.WaitGroup
-			wg.Add(len(m))
-			for _, e := range m {
-				w := e.window.Load().(window)
-				w[count%uint(len(w))] = nil
-				e.window.Store(w)
-				go check(&wg, e, in, count)
-			}
-			go func() {
-				wg.Wait()
-				close(in)
-			}()
-			go s.boundsAgregate(in)
 			count++
+			check(count)
 
 		case res := <-s.agregateDone:
 			m[res.min.name].minUpd(&minHeap)
 			m[res.max.name].maxUpd(&maxHeap)
-			// minEntry := m[minHeap[0].name]
-			// maxEntry := m[maxHeap[0].name]
-			// bounds = &boundsResult{
-			// 	min: minEntry.ress[(count-1)%uint(len(minEntry.ress))],
-			// 	max: maxEntry.ress[(count-1)%uint(len(maxEntry.ress))],
-			// }
+			wMin := m[minHeap[0].name].window.Load().(window)
+			wMax := m[maxHeap[0].name].window.Load().(window)
+			bounds = &boundsResult{
+				min: wMin.last(count),
+				max: wMax.last(count),
+			}
 
 		case ch := <-s.boundsReq:
 			if bounds == nil {
@@ -245,32 +257,17 @@ func (s *Scraper) serve(ctx context.Context) {
 			}
 
 		case req := <-s.serviceReq:
-			go func(e *entry, resp chan<- *serviceResponse, count uint) {
-				if e == nil {
-					resp <- &serviceResponse{err: ErrNotFound}
-					return
-				}
-				w := e.window.Load().(window)
-				var r *result
-				if count > 0 {
-					for i := 1; i <= len(w); i++ {
-						r = w[(count-uint(i))%uint(len(w))]
-						if e.name == "qq.com" {
-							fmt.Fprintf(os.Stderr, "for#%d: w[%d]=%v\n", count, (count-uint(i))%uint(len(w)), r)
-						}
-						if r != nil {
-							break
-						}
-					}
-				}
-				if r == nil {
-					// fmt.Fprintf(os.Stderr, "not-ready: %d\n", count)
-					resp <- &serviceResponse{err: ErrNotReady}
-					return
-				}
-				<-r.ready
-				resp <- &serviceResponse{res: r}
-			}(m[req.name], req.resp, count)
+			e := m[req.name]
+			if e == nil {
+				req.resp <- &serviceResponse{err: ErrNotFound}
+				break
+			}
+			r := e.window.Load().(window).last(count)
+			if r == nil {
+				req.resp <- &serviceResponse{err: ErrNotReady}
+				break
+			}
+			req.resp <- &serviceResponse{res: r}
 
 		case <-ctx.Done():
 			ticker.Stop()
@@ -280,10 +277,10 @@ func (s *Scraper) serve(ctx context.Context) {
 	}
 }
 
-func (s *Scraper) boundsAgregate(in <-chan *result) {
+func (s *Scraper) boundsAgregate(aggCh <-chan *result) {
 	var min, max *result
 	var total int
-	for r := range in {
+	for r := range aggCh {
 		if total > 0 {
 			if r.respTime < min.respTime {
 				min = r
@@ -307,17 +304,15 @@ func (s *Scraper) boundsAgregate(in <-chan *result) {
 func (s *Scraper) GetServiceResponse(name string) (*ServiceResponse, error) {
 	req := &serivceRequest{
 		name: name,
-		resp: make(chan *serviceResponse),
+		resp: make(chan *serviceResponse, 1),
 	}
 	select {
 	case s.serviceReq <- req:
 		resp := <-req.resp
-		switch resp.err {
-		case ErrNotReady:
-			return nil, ErrNotReady
-		case ErrNotFound:
-			return nil, ErrNotFound
+		if resp.err != nil {
+			return nil, resp.err
 		}
+		<-resp.res.ready
 		return &ServiceResponse{
 			Name:         name,
 			AvgRespTime:  resp.res.avgRespTime,
@@ -330,14 +325,17 @@ func (s *Scraper) GetServiceResponse(name string) (*ServiceResponse, error) {
 	}
 }
 
+// GetBounds ...
 func (s *Scraper) GetBounds() (*BoundsResponse, error) {
 	ch := make(chan *boundsResponse, 1)
 	select {
 	case s.boundsReq <- ch:
 		resp := <-ch
-		if resp.err == ErrNotReady {
-			return nil, ErrNotReady
+		if resp.err != nil {
+			return nil, resp.err
 		}
+		<-resp.min.ready
+		<-resp.max.ready
 		return &BoundsResponse{
 			Min: &ServiceResponse{
 				Name:         resp.min.name,
