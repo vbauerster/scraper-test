@@ -81,7 +81,7 @@ func (e *entry) maxUpd(h *boundsHeap) {
 	heap.Fix(h, e.bcMax.index)
 }
 
-func (e *entry) check(ctx context.Context, ch chan<- *result, count uint) {
+func (e *entry) check(ctx context.Context, aggCh chan<- *result, count uint) {
 	res := &result{
 		name:  e.name,
 		ready: make(chan struct{}),
@@ -110,7 +110,7 @@ func (e *entry) check(ctx context.Context, ch chan<- *result, count uint) {
 	if res.err != nil {
 		return
 	}
-	ch <- res
+	aggCh <- res
 }
 
 type Scraper struct {
