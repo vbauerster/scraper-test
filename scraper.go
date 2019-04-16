@@ -56,7 +56,6 @@ type window [15]*result
 func (w window) last(count uint) (r *result) {
 	for i := 0; i < len(w); i++ {
 		r = w[(count-uint(i))%uint(len(w))]
-		// fmt.Fprintf(os.Stderr, "for#%d: w[%d]=%v\n", count, (count-uint(i))%uint(len(w)), r)
 		if r != nil {
 			return r
 		}
@@ -99,9 +98,6 @@ func (e *entry) check(ctx context.Context, ch chan<- *result, count uint) {
 	var sum, errs, total int64
 	for _, r := range w {
 		if r == nil {
-			// if e.name == "qq.com" {
-			// 	fmt.Fprintf(os.Stderr, "check#%d: w[%d]=%v\n", count, i, r)
-			// }
 			break
 		}
 		if r.err != nil {
