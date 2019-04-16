@@ -14,49 +14,20 @@ scraper-test REST API.
 - [SetContentType.func1](https://github.com/go-chi/render/content_type.go#L49)
 - **/admins**
 	- _GET_
-		- [(*server).initRoutes.func1](/app/routes.go#L18)
+		- [(*server).initRoutes.func2](/app/routes.go#L24)
 
 </details>
 <details>
-<summary>`/bounds/*/errors`</summary>
+<summary>`/bounds`</summary>
 
 - [RequestID](https://github.com/go-chi/chi/middleware/request_id.go#L63)
 - [RealIP](https://github.com/go-chi/chi/middleware/realip.go#L29)
 - [Logger](https://github.com/go-chi/chi/middleware/logger.go#L30)
 - [Recoverer](https://github.com/go-chi/chi/middleware/recoverer.go#L18)
 - [SetContentType.func1](https://github.com/go-chi/render/content_type.go#L49)
-- **/bounds/***
-	- **/errors**
-		- _GET_
-			- [(*server).listErrorServices-fm](/app/handlers.go#L61)
-
-</details>
-<details>
-<summary>`/bounds/*/max`</summary>
-
-- [RequestID](https://github.com/go-chi/chi/middleware/request_id.go#L63)
-- [RealIP](https://github.com/go-chi/chi/middleware/realip.go#L29)
-- [Logger](https://github.com/go-chi/chi/middleware/logger.go#L30)
-- [Recoverer](https://github.com/go-chi/chi/middleware/recoverer.go#L18)
-- [SetContentType.func1](https://github.com/go-chi/render/content_type.go#L49)
-- **/bounds/***
-	- **/max**
-		- _GET_
-			- [(*server).boundsMax-fm](/app/handlers.go#L112)
-
-</details>
-<details>
-<summary>`/bounds/*/min`</summary>
-
-- [RequestID](https://github.com/go-chi/chi/middleware/request_id.go#L63)
-- [RealIP](https://github.com/go-chi/chi/middleware/realip.go#L29)
-- [Logger](https://github.com/go-chi/chi/middleware/logger.go#L30)
-- [Recoverer](https://github.com/go-chi/chi/middleware/recoverer.go#L18)
-- [SetContentType.func1](https://github.com/go-chi/render/content_type.go#L49)
-- **/bounds/***
-	- **/min**
-		- _GET_
-			- [(*server).boundsMin-fm](/app/handlers.go#L90)
+- **/bounds**
+	- _GET_
+		- [(*server).queryBounds-fm](/app/handlers.go#L74)
 
 </details>
 <details>
@@ -70,8 +41,8 @@ scraper-test REST API.
 - **/services/***
 	- **/{serviceName}**
 		- _GET_
-			- [(*server).queryService-fm](/app/handlers.go#L68)
+			- [(*server).queryService-fm](/app/handlers.go#L50)
 
 </details>
 
-Total # of routes: 5
+Total # of routes: 3
