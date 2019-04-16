@@ -1,5 +1,11 @@
 package scraper
 
+type boundsCounter struct {
+	name  string
+	index int
+	count uint
+}
+
 type boundsHeap []*boundsCounter
 
 func (h boundsHeap) Len() int { return len(h) }

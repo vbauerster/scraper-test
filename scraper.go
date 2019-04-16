@@ -71,12 +71,6 @@ type entry struct {
 	bcMax *boundsCounter
 }
 
-type boundsCounter struct {
-	name  string
-	index int
-	count uint
-}
-
 func (e *entry) minUpd(h *boundsHeap) {
 	e.bcMin.count++
 	heap.Fix(h, e.bcMin.index)
