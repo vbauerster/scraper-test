@@ -27,31 +27,51 @@ var (
 	ErrSrvDone  = errors.New("service done")
 )
 
-type BoundsResponse struct {
-	Min *ServiceResponse
-	Max *ServiceResponse
-}
+type (
+	ServiceResponse struct {
+		Name         string
+		WindowTotal  int64
+		AvgRespTime  time.Duration
+		LastRespTime time.Duration
+		LastError    error
+		ErrRate      float64
+	}
+	BoundsResponse struct {
+		Min string
+		Max string
+	}
+)
 
-type ServiceResponse struct {
-	Name         string
-	AvgRespTime  time.Duration
-	LastRespTime time.Duration
-	LastError    error
-	ErrRate      float32
-}
+type (
+	serivceRequest struct {
+		name string
+		resp chan *serviceResponse
+	}
+	serviceResponse struct {
+		res  *result
+		stat *statistic
+		err  error
+	}
+	bounds struct {
+		min *result
+		max *result
+		err error
+	}
+	result struct {
+		name     string
+		respTime time.Duration
+		err      error
+	}
+	statistic struct {
+		windowTotal int64
+		avgRespTime time.Duration
+		errRate     float64
+	}
+)
 
 type srvMap map[string]*entry
 
-type result struct {
-	name        string
-	ready       chan struct{}
-	respTime    time.Duration
-	avgRespTime time.Duration
-	errRate     float32
-	err         error
-}
-
-type window [15]*result
+type window [11]*result
 
 func (w window) last(count uint) (r *result) {
 	for i := 0; i < len(w); i++ {
@@ -63,12 +83,34 @@ func (w window) last(count uint) (r *result) {
 	return r
 }
 
+func (w window) stat() (s *statistic) {
+	s = new(statistic)
+	var sum, errs int64
+	var skipped int
+	for _, r := range w {
+		if r == nil {
+			skipped++
+			continue
+		}
+		if r.err != nil {
+			errs++
+		} else {
+			sum += int64(r.respTime)
+		}
+		s.windowTotal++
+	}
+	if total := s.windowTotal - errs; total > 0 {
+		s.avgRespTime = time.Duration(sum / total)
+	}
+	s.errRate = float64(errs) / float64(len(w)-skipped)
+	return s
+}
+
 type entry struct {
 	name   string
 	window atomic.Value
-
-	bcMin *boundsCounter
-	bcMax *boundsCounter
+	bcMin  *boundsCounter
+	bcMax  *boundsCounter
 }
 
 func (e *entry) minUpd(h *boundsHeap) {
@@ -81,31 +123,13 @@ func (e *entry) maxUpd(h *boundsHeap) {
 	heap.Fix(h, e.bcMax.index)
 }
 
-func (e *entry) check(ctx context.Context, aggCh chan<- *result, count uint) {
+func (e *entry) check(ctx context.Context, count uint, aggCh chan<- *result) {
 	res := &result{
-		name:  e.name,
-		ready: make(chan struct{}),
+		name: e.name,
 	}
 	res.respTime, res.err = httpGet(ctx, e.name)
 	w := e.window.Load().(window)
 	w[count%uint(len(w))] = res
-	var sum, errs, total int64
-	for _, r := range w {
-		if r == nil {
-			break
-		}
-		if r.err != nil {
-			errs++
-		} else {
-			sum += int64(r.respTime)
-			total++
-		}
-	}
-	if total > 0 {
-		res.avgRespTime = time.Duration(sum / total)
-	}
-	res.errRate = float32(errs) / float32(len(w))
-	close(res.ready)
 	e.window.Store(w)
 	if res.err != nil {
 		return
@@ -117,31 +141,10 @@ type Scraper struct {
 	fetchLimit   int
 	rr           time.Duration
 	services     []string
-	agregateDone chan *boundsResult
+	agregateDone chan *bounds
 	serviceReq   chan *serivceRequest
-	boundsReq    chan chan *boundsResponse
+	boundsReq    chan chan *bounds
 	done         chan struct{}
-}
-
-type serivceRequest struct {
-	name string
-	resp chan *serviceResponse
-}
-
-type serviceResponse struct {
-	res *result
-	err error
-}
-
-type boundsResponse struct {
-	min *result
-	max *result
-	err error
-}
-
-type boundsResult struct {
-	min *result
-	max *result
 }
 
 // NewScraper initializes and starts a scraper service
@@ -150,9 +153,9 @@ func NewScraper(ctx context.Context, services []string, refreshRate time.Duratio
 		fetchLimit:   fetchLimit,
 		rr:           refreshRate,
 		services:     services,
-		agregateDone: make(chan *boundsResult),
+		agregateDone: make(chan *bounds),
 		serviceReq:   make(chan *serivceRequest),
-		boundsReq:    make(chan chan *boundsResponse),
+		boundsReq:    make(chan chan *bounds),
 		done:         make(chan struct{}),
 	}
 	if s.fetchLimit < 1 {
@@ -184,7 +187,7 @@ func (s *Scraper) serve(ctx context.Context) {
 				// This sem is guaranteeing that there are no more than N fetch operations running.
 				// It isn't guaranteeing that there are no more than N goroutines running.
 				sem <- struct{}{}
-				e.check(ctx, aggCh, count)
+				e.check(ctx, count, aggCh)
 				<-sem
 			}(e)
 		}
@@ -218,7 +221,6 @@ func (s *Scraper) serve(ctx context.Context) {
 	var count uint
 	check(count)
 
-	var bounds *boundsResult
 	ticker := time.NewTicker(s.rr)
 	for {
 		select {
@@ -229,35 +231,39 @@ func (s *Scraper) serve(ctx context.Context) {
 		case res := <-s.agregateDone:
 			m[res.min.name].minUpd(&minHeap)
 			m[res.max.name].maxUpd(&maxHeap)
-			wMin := m[minHeap[0].name].window.Load().(window)
-			wMax := m[maxHeap[0].name].window.Load().(window)
-			bounds = &boundsResult{
-				min: wMin.last(count),
-				max: wMax.last(count),
-			}
 
 		case ch := <-s.boundsReq:
-			if bounds == nil {
-				ch <- &boundsResponse{err: ErrNotReady}
-				break
-			}
-			ch <- &boundsResponse{
-				min: bounds.min,
-				max: bounds.max,
-			}
+			go func(eMin, eMax *entry, count uint) {
+				wMin := eMin.window.Load().(window)
+				wMax := eMax.window.Load().(window)
+				resp := &bounds{
+					min: wMin.last(count),
+					max: wMax.last(count),
+				}
+				if resp.min == nil || resp.max == nil {
+					ch <- &bounds{err: ErrNotReady}
+					return
+				}
+				ch <- resp
+			}(m[minHeap[0].name], m[maxHeap[0].name], count)
 
 		case req := <-s.serviceReq:
-			e := m[req.name]
-			if e == nil {
-				req.resp <- &serviceResponse{err: ErrNotFound}
-				break
-			}
-			r := e.window.Load().(window).last(count)
-			if r == nil {
-				req.resp <- &serviceResponse{err: ErrNotReady}
-				break
-			}
-			req.resp <- &serviceResponse{res: r}
+			go func(e *entry, count uint) {
+				if e == nil {
+					req.resp <- &serviceResponse{err: ErrNotFound}
+					return
+				}
+				w := e.window.Load().(window)
+				res := w.last(count)
+				if res == nil {
+					req.resp <- &serviceResponse{err: ErrNotReady}
+					return
+				}
+				req.resp <- &serviceResponse{
+					res:  res,
+					stat: w.stat(),
+				}
+			}(m[req.name], count)
 
 		case <-ctx.Done():
 			ticker.Stop()
@@ -284,7 +290,7 @@ func (s *Scraper) boundsAgregate(aggCh <-chan *result) {
 		}
 		total++
 	}
-	s.agregateDone <- &boundsResult{
+	s.agregateDone <- &bounds{
 		min: min,
 		max: max,
 	}
@@ -294,7 +300,7 @@ func (s *Scraper) boundsAgregate(aggCh <-chan *result) {
 func (s *Scraper) GetServiceResponse(name string) (*ServiceResponse, error) {
 	req := &serivceRequest{
 		name: name,
-		resp: make(chan *serviceResponse, 1),
+		resp: make(chan *serviceResponse),
 	}
 	select {
 	case s.serviceReq <- req:
@@ -302,13 +308,13 @@ func (s *Scraper) GetServiceResponse(name string) (*ServiceResponse, error) {
 		if resp.err != nil {
 			return nil, resp.err
 		}
-		<-resp.res.ready
 		return &ServiceResponse{
 			Name:         name,
-			AvgRespTime:  resp.res.avgRespTime,
+			WindowTotal:  resp.stat.windowTotal,
+			ErrRate:      resp.stat.errRate,
+			AvgRespTime:  resp.stat.avgRespTime,
 			LastRespTime: resp.res.respTime,
 			LastError:    resp.res.err,
-			ErrRate:      resp.res.errRate,
 		}, nil
 	case <-s.done:
 		return nil, ErrSrvDone
@@ -317,30 +323,16 @@ func (s *Scraper) GetServiceResponse(name string) (*ServiceResponse, error) {
 
 // GetBounds ...
 func (s *Scraper) GetBounds() (*BoundsResponse, error) {
-	ch := make(chan *boundsResponse, 1)
+	ch := make(chan *bounds)
 	select {
 	case s.boundsReq <- ch:
 		resp := <-ch
 		if resp.err != nil {
 			return nil, resp.err
 		}
-		<-resp.min.ready
-		<-resp.max.ready
 		return &BoundsResponse{
-			Min: &ServiceResponse{
-				Name:         resp.min.name,
-				AvgRespTime:  resp.min.avgRespTime,
-				LastRespTime: resp.min.respTime,
-				LastError:    resp.min.err,
-				ErrRate:      resp.min.errRate,
-			},
-			Max: &ServiceResponse{
-				Name:         resp.max.name,
-				AvgRespTime:  resp.max.avgRespTime,
-				LastRespTime: resp.max.respTime,
-				LastError:    resp.max.err,
-				ErrRate:      resp.max.errRate,
-			},
+			Min: resp.min.name,
+			Max: resp.max.name,
 		}, nil
 	case <-s.done:
 		return nil, ErrSrvDone
