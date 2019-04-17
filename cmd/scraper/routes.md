@@ -27,7 +27,7 @@ scraper-test REST API.
 - [SetContentType.func1](https://github.com/go-chi/render/content_type.go#L49)
 - **/bounds**
 	- _GET_
-		- [(*server).queryBounds-fm](/app/handlers.go#L74)
+		- [(*server).queryBounds-fm](/app/handlers.go#L77)
 
 </details>
 <details>
@@ -41,7 +41,7 @@ scraper-test REST API.
 - **/services/***
 	- **/{serviceName}**
 		- _GET_
-			- [(*server).queryService-fm](/app/handlers.go#L50)
+			- [(*server).queryService-fm](/app/handlers.go#L51)
 
 </details>
 
