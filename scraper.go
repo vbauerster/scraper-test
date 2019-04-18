@@ -48,16 +48,16 @@ type (
 		resp chan *serviceResponse
 	}
 	serviceResponse struct {
-		res  *result
+		res  *fetchResult
 		stat *statistic
 		err  error
 	}
-	bounds struct {
-		min *result
-		max *result
+	boundsResponse struct {
+		min string
+		max string
 		err error
 	}
-	result struct {
+	fetchResult struct {
 		name     string
 		respTime time.Duration
 		err      error
@@ -67,13 +67,17 @@ type (
 		avgRespTime time.Duration
 		errRate     float64
 	}
+	aggResult struct {
+		min string
+		max string
+	}
 )
 
 type srvMap map[string]*entry
 
-type window [11]*result
+type window [11]*fetchResult
 
-func (w window) last(count uint) (r *result) {
+func (w window) last(count uint) (r *fetchResult) {
 	for i := 0; i < len(w); i++ {
 		r = w[(count-uint(i))%uint(len(w))]
 		if r != nil {
@@ -123,8 +127,8 @@ func (e *entry) maxUpd(h *boundsHeap) {
 	heap.Fix(h, e.bcMax.index)
 }
 
-func (e *entry) check(ctx context.Context, count uint, aggCh chan<- *result) {
-	res := &result{
+func (e *entry) check(ctx context.Context, count uint, aggCh chan<- *fetchResult) {
+	res := &fetchResult{
 		name: e.name,
 	}
 	res.respTime, res.err = httpGet(ctx, e.name)
@@ -141,9 +145,9 @@ type Scraper struct {
 	fetchLimit   int
 	rr           time.Duration
 	services     []string
-	agregateDone chan *bounds
+	agregateDone chan *aggResult
 	serviceReq   chan *serivceRequest
-	boundsReq    chan chan *bounds
+	boundsReq    chan chan *boundsResponse
 	done         chan struct{}
 }
 
@@ -153,9 +157,9 @@ func NewScraper(ctx context.Context, services []string, refreshRate time.Duratio
 		fetchLimit:   fetchLimit,
 		rr:           refreshRate,
 		services:     services,
-		agregateDone: make(chan *bounds),
+		agregateDone: make(chan *aggResult),
 		serviceReq:   make(chan *serivceRequest),
-		boundsReq:    make(chan chan *bounds),
+		boundsReq:    make(chan chan *boundsResponse),
 		done:         make(chan struct{}),
 	}
 	if s.fetchLimit < 1 {
@@ -176,7 +180,7 @@ func (s *Scraper) serve(ctx context.Context) {
 	check := func(count uint) {
 		var wg sync.WaitGroup
 		wg.Add(len(m))
-		aggCh := make(chan *result)
+		aggCh := make(chan *fetchResult)
 		for _, e := range m {
 			w := e.window.Load().(window)
 			// override old result, if any
@@ -229,23 +233,19 @@ func (s *Scraper) serve(ctx context.Context) {
 			check(count)
 
 		case res := <-s.agregateDone:
-			m[res.min.name].minUpd(&minHeap)
-			m[res.max.name].maxUpd(&maxHeap)
+			m[res.min].minUpd(&minHeap)
+			m[res.max].maxUpd(&maxHeap)
 
 		case ch := <-s.boundsReq:
-			go func(eMin, eMax *entry, count uint) {
-				wMin := eMin.window.Load().(window)
-				wMax := eMax.window.Load().(window)
-				resp := &bounds{
-					min: wMin.last(count),
-					max: wMax.last(count),
+			go func(min, max *boundsCounter) {
+				if min.count == 0 || max.count == 0 {
+					ch <- &boundsResponse{err: ErrNotReady}
 				}
-				if resp.min == nil || resp.max == nil {
-					ch <- &bounds{err: ErrNotReady}
-					return
+				ch <- &boundsResponse{
+					min: min.name,
+					max: max.name,
 				}
-				ch <- resp
-			}(m[minHeap[0].name], m[maxHeap[0].name], count)
+			}(minHeap[0], maxHeap[0])
 
 		case req := <-s.serviceReq:
 			go func(e *entry, count uint) {
@@ -273,8 +273,8 @@ func (s *Scraper) serve(ctx context.Context) {
 	}
 }
 
-func (s *Scraper) boundsAgregate(aggCh <-chan *result) {
-	var min, max *result
+func (s *Scraper) boundsAgregate(aggCh <-chan *fetchResult) {
+	var min, max *fetchResult
 	var total int
 	for r := range aggCh {
 		if total > 0 {
@@ -290,9 +290,9 @@ func (s *Scraper) boundsAgregate(aggCh <-chan *result) {
 		}
 		total++
 	}
-	s.agregateDone <- &bounds{
-		min: min,
-		max: max,
+	s.agregateDone <- &aggResult{
+		min: min.name,
+		max: max.name,
 	}
 }
 
@@ -323,7 +323,7 @@ func (s *Scraper) GetServiceResponse(name string) (*ServiceResponse, error) {
 
 // GetBounds ...
 func (s *Scraper) GetBounds() (*BoundsResponse, error) {
-	ch := make(chan *bounds)
+	ch := make(chan *boundsResponse)
 	select {
 	case s.boundsReq <- ch:
 		resp := <-ch
@@ -331,8 +331,8 @@ func (s *Scraper) GetBounds() (*BoundsResponse, error) {
 			return nil, resp.err
 		}
 		return &BoundsResponse{
-			Min: resp.min.name,
-			Max: resp.max.name,
+			Min: resp.min,
+			Max: resp.max,
 		}, nil
 	case <-s.done:
 		return nil, ErrSrvDone
